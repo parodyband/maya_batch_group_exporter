@@ -1,0 +1,548 @@
+"""
+Main Window
+Slim coordinator that composes widgets and connects signals.
+"""
+
+from typing import Optional
+
+try:
+    from PySide2 import QtCore, QtWidgets
+except ImportError:
+    from PySide6 import QtCore, QtWidgets
+
+from maya import OpenMayaUI as omui
+
+try:
+    from shiboken2 import wrapInstance
+except ImportError:
+    from shiboken6 import wrapInstance
+
+from ..container import get_container
+from ..maya_facade import MayaSceneInterface
+from ..data_manager import DataManager
+from ..exporters.export_service import ExportService
+from .widgets.tree_view import ExportTreeWidget
+from .widgets.toolbar import ExportToolbar
+from .widgets.export_settings_panel import ExportSettingsPanel
+from .widgets.fbx_settings_panel import FBXSettingsPanel
+from .state_manager import SelectionStateManager, IsolationStateManager
+from .dialogs import (
+    NewGroupDialog, RenameGroupDialog, ConfirmDeleteDialog,
+    ExportResultsDialog, ConfirmExportDialog, InfoDialog
+)
+from ..context_managers import PausedTimerContext
+from ..constants import (
+    REFRESH_INTERVAL_MS, BUTTON_HEIGHT_STANDARD, BUTTON_HEIGHT_EXPORT,
+    SPACING_SMALL, MARGIN_SMALL, SPACING_MEDIUM
+)
+from ..logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def get_maya_main_window():
+    """Get Maya's main window as a Qt object."""
+    main_window_ptr = omui.MQtUtil.mainWindow()
+    return wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
+
+
+class BatchExporterWindow(QtWidgets.QWidget):
+    """
+    Main window for the batch exporter.
+    Composes widgets and coordinates their interactions.
+    """
+    
+    def __init__(self, parent=None):
+        """
+        Initialize the main window.
+        
+        Args:
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        
+        # Get dependencies from container
+        container = get_container()
+        self.data_manager = container.get_data_manager()
+        self.export_service = container.get_export_service()
+        self.maya_scene = container.get_maya_scene()
+        
+        # Create state managers
+        self.selection_manager = SelectionStateManager(self.data_manager, self.maya_scene)
+        self.isolation_manager = IsolationStateManager(self.data_manager, self.maya_scene)
+        
+        # Create UI
+        self._create_ui()
+        self._create_connections()
+        
+        # Setup refresh timer
+        self._setup_refresh_timer()
+        
+        # Initial refresh
+        self.tree_widget.refresh(preserve_selection=False)
+        self._refresh_settings()
+        self.toolbar.update_summary()
+    
+    def _create_ui(self) -> None:
+        """Create the UI layout."""
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL)
+        main_layout.setSpacing(SPACING_SMALL)
+        
+        # Toolbar
+        self.toolbar = ExportToolbar(self.data_manager)
+        main_layout.addWidget(self.toolbar)
+        main_layout.addWidget(self._create_separator())
+        
+        # Tree panel
+        tree_group = QtWidgets.QGroupBox("Level Hierarchy")
+        tree_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        tree_layout = QtWidgets.QVBoxLayout(tree_group)
+        tree_layout.setContentsMargins(6, 8, 6, 6)
+        tree_layout.setSpacing(SPACING_SMALL)
+        
+        self.tree_widget = ExportTreeWidget(self.data_manager)
+        tree_layout.addWidget(self.tree_widget)
+        
+        # Tree action buttons
+        buttons_layout = QtWidgets.QHBoxLayout()
+        buttons_layout.setSpacing(SPACING_SMALL)
+        
+        self.add_group_btn = QtWidgets.QPushButton("+ Group")
+        self.remove_btn = QtWidgets.QPushButton("- Remove")
+        self.add_selected_btn = QtWidgets.QPushButton("+ Add Selected")
+        
+        self.add_group_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        self.remove_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        self.add_selected_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        
+        self.add_group_btn.setToolTip("Create a new export group")
+        self.remove_btn.setToolTip("Remove selected groups or objects")
+        self.add_selected_btn.setToolTip("Add selected scene objects to the current group")
+        
+        buttons_layout.addWidget(self.add_group_btn)
+        buttons_layout.addWidget(self.remove_btn)
+        buttons_layout.addStretch()
+        buttons_layout.addWidget(self.add_selected_btn)
+        
+        tree_layout.addLayout(buttons_layout)
+        main_layout.addWidget(tree_group)
+        
+        # Export settings
+        self.export_settings_panel = ExportSettingsPanel()
+        main_layout.addWidget(self.export_settings_panel)
+        
+        # FBX settings
+        self.fbx_settings_panel = FBXSettingsPanel()
+        main_layout.addWidget(self.fbx_settings_panel)
+        
+        # Export panel
+        main_layout.addWidget(self._create_separator())
+        main_layout.addWidget(self._create_export_panel())
+    
+    def _create_separator(self) -> QtWidgets.QFrame:
+        """Create a visual separator line."""
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.HLine)
+        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line.setStyleSheet("QFrame { color: #555555; }")
+        return line
+    
+    def _create_export_panel(self) -> QtWidgets.QWidget:
+        """Create the export buttons panel."""
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, SPACING_SMALL, 0, 0)
+        layout.setSpacing(SPACING_MEDIUM)
+        
+        self.save_btn = QtWidgets.QPushButton("Save Preset")
+        self.load_btn = QtWidgets.QPushButton("Load Preset")
+        self.export_selected_btn = QtWidgets.QPushButton("Export Selected")
+        self.export_all_btn = QtWidgets.QPushButton("Export All")
+        
+        self.save_btn.setMinimumWidth(90)
+        self.load_btn.setMinimumWidth(90)
+        self.save_btn.setMinimumHeight(BUTTON_HEIGHT_EXPORT)
+        self.load_btn.setMinimumHeight(BUTTON_HEIGHT_EXPORT)
+        self.export_selected_btn.setMinimumHeight(BUTTON_HEIGHT_EXPORT)
+        self.export_all_btn.setMinimumHeight(BUTTON_HEIGHT_EXPORT)
+        
+        self.save_btn.setToolTip("Save current configuration to a preset file")
+        self.load_btn.setToolTip("Load configuration from a preset file")
+        self.export_selected_btn.setToolTip("Export the currently selected group")
+        self.export_all_btn.setToolTip("Export all groups in the list")
+        
+        self.export_selected_btn.setStyleSheet(
+            "QPushButton { background-color: #4a90e2; color: white; font-weight: bold; } "
+            "QPushButton:hover { background-color: #357abd; }"
+        )
+        self.export_all_btn.setStyleSheet(
+            "QPushButton { background-color: #5cb85c; color: white; font-weight: bold; } "
+            "QPushButton:hover { background-color: #4a9b4a; }"
+        )
+        
+        layout.addWidget(self.save_btn)
+        layout.addWidget(self.load_btn)
+        layout.addStretch()
+        layout.addWidget(self.export_selected_btn)
+        layout.addWidget(self.export_all_btn)
+        
+        return widget
+    
+    def _create_connections(self) -> None:
+        """Connect signals to slots."""
+        # Tree widget
+        self.tree_widget.selection_changed.connect(self._on_tree_selection_changed)
+        self.tree_widget.context_menu_requested.connect(self._on_context_menu_requested)
+        
+        # Toolbar
+        self.toolbar.select_in_scene_clicked.connect(self._select_objects_in_scene)
+        self.toolbar.isolate_clicked.connect(self._toggle_isolate)
+        self.toolbar.refresh_clicked.connect(self._manual_refresh)
+        
+        # Tree buttons
+        self.add_group_btn.clicked.connect(self._add_group)
+        self.remove_btn.clicked.connect(self._remove_selected)
+        self.add_selected_btn.clicked.connect(self._add_selected_objects)
+        
+        # Export settings
+        self.export_settings_panel.directory_changed.connect(self._on_directory_changed)
+        self.export_settings_panel.prefix_changed.connect(self._on_prefix_changed)
+        
+        # FBX settings
+        self.fbx_settings_panel.triangulate_changed.connect(self._on_fbx_setting_changed)
+        self.fbx_settings_panel.up_axis_changed.connect(self._on_fbx_setting_changed)
+        self.fbx_settings_panel.unit_changed.connect(self._on_fbx_setting_changed)
+        
+        # Export buttons
+        self.save_btn.clicked.connect(self._save_config)
+        self.load_btn.clicked.connect(self._load_config)
+        self.export_selected_btn.clicked.connect(self._export_selected_group)
+        self.export_all_btn.clicked.connect(self._export_all_groups)
+    
+    def _setup_refresh_timer(self) -> None:
+        """Setup automatic tree refresh timer."""
+        self.refresh_timer = QtCore.QTimer(self)
+        self.refresh_timer.timeout.connect(self._on_timer_refresh)
+        self.refresh_timer.start(REFRESH_INTERVAL_MS)
+    
+    def _on_timer_refresh(self) -> None:
+        """Handle timer-based refresh."""
+        self.tree_widget.refresh(preserve_selection=True)
+        self.toolbar.update_summary()
+    
+    def _manual_refresh(self) -> None:
+        """Handle manual refresh button click."""
+        self.tree_widget.refresh(preserve_selection=True)
+        self.toolbar.update_summary()
+    
+    def _on_tree_selection_changed(self) -> None:
+        """Handle tree selection change."""
+        group_index = self.tree_widget.get_selected_group_index()
+        self.selection_manager.set_current_group(group_index)
+    
+    def _on_context_menu_requested(self, item, position) -> None:
+        """Handle context menu request."""
+        with PausedTimerContext(self.refresh_timer):
+            if not item:
+                self._show_empty_context_menu(position)
+            else:
+                item_data = item.data(0, QtCore.Qt.UserRole)
+                if item_data and item_data.get("type") == "group":
+                    self._show_group_context_menu(item_data["data"], position)
+                elif item_data and item_data.get("type") == "object":
+                    self._show_object_context_menu(position)
+    
+    def _show_empty_context_menu(self, position) -> None:
+        """Show context menu for empty area."""
+        menu = QtWidgets.QMenu(self)
+        add_action = menu.addAction("Add Group")
+        
+        action = menu.exec_(self.tree_widget.tree_widget.viewport().mapToGlobal(position))
+        if action == add_action:
+            self._add_group()
+    
+    def _show_group_context_menu(self, group_data, position) -> None:
+        """Show context menu for group items."""
+        menu = QtWidgets.QMenu(self)
+        
+        rename_action = menu.addAction("Rename Group")
+        duplicate_action = menu.addAction("Duplicate Group")
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete Group")
+        
+        action = menu.exec_(self.tree_widget.tree_widget.viewport().mapToGlobal(position))
+        
+        if action == rename_action:
+            self._rename_group(group_data)
+        elif action == duplicate_action:
+            self._duplicate_group(group_data)
+        elif action == delete_action:
+            self._delete_group(group_data)
+    
+    def _show_object_context_menu(self, position) -> None:
+        """Show context menu for object items."""
+        selected_items = self.tree_widget.tree_widget.selectedItems()
+        
+        menu = QtWidgets.QMenu(self)
+        
+        if len(selected_items) == 1:
+            remove_action = menu.addAction("Remove from Group")
+        else:
+            remove_action = menu.addAction(f"Remove {len(selected_items)} Objects from Group")
+        
+        action = menu.exec_(self.tree_widget.tree_widget.viewport().mapToGlobal(position))
+        
+        if action == remove_action:
+            self._remove_selected()
+    
+    def _add_group(self) -> None:
+        """Add a new export group."""
+        with PausedTimerContext(self.refresh_timer):
+            name = NewGroupDialog.get_group_name(self)
+            if name:
+                new_index = self.data_manager.add_export_group(name)
+                if new_index is not None:
+                    self.tree_widget.refresh(preserve_selection=False)
+                    self.toolbar.update_summary()
+                else:
+                    InfoDialog.show_error("Error", "Failed to create group")
+    
+    def _rename_group(self, group_data) -> None:
+        """Rename a group."""
+        current_name = group_data["name"]
+        set_name = group_data["set_name"]
+        
+        new_name = RenameGroupDialog.get_new_name(current_name, self)
+        if new_name:
+            groups = self.data_manager.get_all_export_groups()
+            for i, group in enumerate(groups):
+                if group.get("set_name") == set_name:
+                    if self.data_manager.update_export_group(i, name=new_name):
+                        self.tree_widget.refresh(preserve_selection=True)
+                    else:
+                        InfoDialog.show_error("Error", "Failed to rename group")
+                    break
+    
+    def _duplicate_group(self, group_data) -> None:
+        """Duplicate a group."""
+        set_name = group_data["set_name"]
+        
+        groups = self.data_manager.get_all_export_groups()
+        for i, group in enumerate(groups):
+            if group.get("set_name") == set_name:
+                new_index = self.data_manager.duplicate_export_group(i)
+                if new_index is not None:
+                    self.tree_widget.refresh(preserve_selection=False)
+                    self.toolbar.update_summary()
+                else:
+                    InfoDialog.show_error("Error", "Failed to duplicate group")
+                break
+    
+    def _delete_group(self, group_data) -> None:
+        """Delete a group."""
+        if ConfirmDeleteDialog.confirm(f"Delete group '{group_data['name']}'?", self):
+            set_name = group_data["set_name"]
+            groups = self.data_manager.get_all_export_groups()
+            for i, group in enumerate(groups):
+                if group.get("set_name") == set_name:
+                    if self.data_manager.remove_export_group(i):
+                        self.tree_widget.refresh(preserve_selection=True)
+                        self.toolbar.update_summary()
+                    else:
+                        InfoDialog.show_error("Error", "Failed to delete group")
+                    break
+    
+    def _remove_selected(self) -> None:
+        """Remove selected groups or objects."""
+        with PausedTimerContext(self.refresh_timer):
+            info = self.tree_widget.get_selected_items_info()
+            groups_to_remove = info["groups"]
+            objects_to_remove = info["objects_by_group"]
+            
+            if groups_to_remove:
+                if ConfirmDeleteDialog.confirm(f"Delete {len(groups_to_remove)} group(s)?", self):
+                    for group_data in groups_to_remove:
+                        set_name = group_data["set_name"]
+                        groups = self.data_manager.get_all_export_groups()
+                        for i, group in enumerate(groups):
+                            if group.get("set_name") == set_name:
+                                self.data_manager.remove_export_group(i)
+                                break
+            
+            for set_name, objects in objects_to_remove.items():
+                self.data_manager.remove_objects_from_set(set_name, objects)
+            
+            self.tree_widget.refresh(preserve_selection=True)
+            self.toolbar.update_summary()
+    
+    def _add_selected_objects(self) -> None:
+        """Add selected scene objects to current group."""
+        if self.selection_manager.add_selected_scene_objects_to_current_group():
+            self.tree_widget.refresh(preserve_selection=True)
+            self.toolbar.update_summary()
+    
+    def _select_objects_in_scene(self) -> None:
+        """Select objects from tree in Maya scene."""
+        info = self.tree_widget.get_selected_items_info()
+        objects_to_select = []
+        
+        # Add objects from selected groups
+        for group in info["groups"]:
+            set_name = group.get("set_name")
+            if set_name:
+                objects_to_select.extend(self.data_manager.get_set_objects(set_name))
+        
+        # Add individually selected objects
+        for objects in info["objects_by_group"].values():
+            objects_to_select.extend(objects)
+        
+        if objects_to_select:
+            self.selection_manager.select_objects_in_scene(objects_to_select)
+    
+    def _toggle_isolate(self) -> None:
+        """Toggle isolation."""
+        group_index = self.selection_manager.get_current_group_index()
+        if group_index is None:
+            logger.warning("No group selected for isolation")
+            return
+        
+        is_isolated = self.isolation_manager.toggle_isolation(group_index)
+        self.toolbar.set_isolated_state(is_isolated)
+    
+    def _on_directory_changed(self, directory: str) -> None:
+        """Handle directory change."""
+        settings = self.data_manager.get_fbx_settings()
+        settings["export_directory"] = directory
+        self.data_manager.update_fbx_settings(settings)
+    
+    def _on_prefix_changed(self, prefix: str) -> None:
+        """Handle prefix change."""
+        settings = self.data_manager.get_fbx_settings()
+        settings["file_prefix"] = prefix
+        self.data_manager.update_fbx_settings(settings)
+    
+    def _on_fbx_setting_changed(self) -> None:
+        """Handle FBX setting change."""
+        settings = self.data_manager.get_fbx_settings()
+        settings["triangulate"] = self.fbx_settings_panel.get_triangulate()
+        settings["up_axis"] = self.fbx_settings_panel.get_up_axis()
+        settings["convert_unit"] = self.fbx_settings_panel.get_unit()
+        self.data_manager.update_fbx_settings(settings)
+    
+    def _refresh_settings(self) -> None:
+        """Refresh settings panels from data manager."""
+        settings = self.data_manager.get_fbx_settings()
+        
+        self.export_settings_panel.set_directory(settings.get("export_directory", ""))
+        self.export_settings_panel.set_prefix(settings.get("file_prefix", ""))
+        
+        self.fbx_settings_panel.set_triangulate(settings.get("triangulate", False))
+        self.fbx_settings_panel.set_up_axis(settings.get("up_axis", "Y"))
+        self.fbx_settings_panel.set_unit(settings.get("convert_unit", "cm"))
+    
+    def _save_config(self) -> None:
+        """Save configuration to file."""
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Configuration",
+            self.data_manager.get_json_path(),
+            "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            success, message = self.data_manager.save_to_file(file_path)
+            if success:
+                InfoDialog.show_info("Success", f"Preset saved successfully:\n{message}", self)
+            else:
+                InfoDialog.show_error("Error", f"Failed to save configuration:\n{message}", self)
+    
+    def _load_config(self) -> None:
+        """Load configuration from file."""
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Configuration",
+            self.data_manager.get_json_path(),
+            "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            success, message = self.data_manager.load_from_file(file_path)
+            if success:
+                self.tree_widget.refresh(preserve_selection=False)
+                self._refresh_settings()
+                self.toolbar.update_summary()
+                InfoDialog.show_info("Success", f"Preset loaded successfully:\n{message}", self)
+            else:
+                InfoDialog.show_error("Error", f"Failed to load configuration:\n{message}", self)
+    
+    def _export_selected_group(self) -> None:
+        """Export the currently selected group."""
+        group_index = self.selection_manager.get_current_group_index()
+        
+        if group_index is None:
+            InfoDialog.show_warning("No Group Selected", "Please select an export group first.", self)
+            return
+        
+        group = self.data_manager.get_export_group(group_index)
+        if not group:
+            InfoDialog.show_error("Error", "Selected group not found", self)
+            return
+        
+        settings = self.data_manager.get_fbx_settings()
+        result = self.export_service.export_single_group(group, settings)
+        
+        ExportResultsDialog.show_single_result(result["success"], result["message"], self)
+    
+    def _export_all_groups(self) -> None:
+        """Export all groups."""
+        groups = self.data_manager.get_all_export_groups()
+        
+        if not groups:
+            InfoDialog.show_warning("No Groups", "There are no export groups to export.", self)
+            return
+        
+        if not ConfirmExportDialog.confirm_export_all(len(groups), self):
+            return
+        
+        settings = self.data_manager.get_fbx_settings()
+        results, success_count = self.export_service.export_all_groups(groups, settings)
+        
+        ExportResultsDialog.show_batch_results(results, success_count, len(groups), self)
+
+
+def show_batch_exporter():
+    """Show the Batch Exporter UI as a dockable workspace control."""
+    global batch_exporter_window
+    
+    workspace_control_name = "batchExporterWorkspace"
+    
+    # Get Maya scene interface from container
+    container = get_container()
+    maya_scene = container.get_maya_scene()
+    
+    # Delete existing workspace control if it exists
+    if maya_scene.workspace_control_exists(workspace_control_name):
+        maya_scene.delete_ui(workspace_control_name)
+    
+    # Create new workspace control
+    maya_scene.create_workspace_control(
+        workspace_control_name,
+        label="Batch Exporter",
+        widthProperty="preferred",
+        initialWidth=600,
+        minimumWidth=400,
+        retain=False
+    )
+    
+    # Get control widget
+    control_ptr = maya_scene.find_control(workspace_control_name)
+    if not control_ptr:
+        raise RuntimeError("Failed to find workspace control")
+    
+    control_widget = wrapInstance(control_ptr, QtWidgets.QWidget)
+    
+    # Create and add main window
+    batch_exporter_window = BatchExporterWindow(parent=control_widget)
+    control_widget.layout().addWidget(batch_exporter_window)
+    
+    return batch_exporter_window
+
