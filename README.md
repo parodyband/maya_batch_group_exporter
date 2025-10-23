@@ -9,7 +9,7 @@ A tool for managing export groups and batch exporting them with configurable FBX
 In Maya's Script Editor (Python tab), run:
 
 ```python
-from batch_exporter import show_batch_exporter
+from maya_batch_group_exporter import show_batch_exporter
 show_batch_exporter()
 ```
 
@@ -18,17 +18,10 @@ show_batch_exporter()
 ```python
 import sys
 for key in list(sys.modules.keys()):
-    if key.startswith('batch_exporter'):
+    if key.startswith('maya_batch_group_exporter'):
         del sys.modules[key]
 
-from batch_exporter import show_batch_exporter
-show_batch_exporter()
-```
-
-**Simple Shelf Button (for production use):**
-
-```python
-from batch_exporter import show_batch_exporter
+from maya_batch_group_exporter import show_batch_exporter
 show_batch_exporter()
 ```
 
