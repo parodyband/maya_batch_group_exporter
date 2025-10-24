@@ -284,25 +284,75 @@ class BatchExporterWindow(QtWidgets.QWidget):
         """Handle update button click to pull from git."""
         script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
-        try:
-            result = subprocess.run(
-                ["git", "pull"],
-                cwd=script_dir,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+        self.toolbar.update_btn.setEnabled(False)
+        self.toolbar.update_btn.setText("Updating...")
+        
+        class GitPullThread(QtCore.QThread):
+            finished_signal = QtCore.Signal(bool, str)
             
-            if result.returncode == 0:
-                InfoDialog.show_info("Update Complete", f"Git pull successful:\n\n{result.stdout}", self)
-            else:
-                InfoDialog.show_error("Update Failed", f"Git pull failed:\n\n{result.stderr}", self)
-        except subprocess.TimeoutExpired:
-            InfoDialog.show_error("Update Failed", "Git pull timed out after 30 seconds.", self)
-        except FileNotFoundError:
-            InfoDialog.show_error("Update Failed", "Git command not found. Make sure git is installed.", self)
-        except Exception as e:
-            InfoDialog.show_error("Update Failed", f"An error occurred:\n\n{str(e)}", self)
+            def __init__(self, directory):
+                super().__init__()
+                self.directory = directory
+            
+            def run(self):
+                try:
+                    result = subprocess.run(
+                        ["git", "pull"],
+                        cwd=self.directory,
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    
+                    if result.returncode == 0:
+                        self.finished_signal.emit(True, result.stdout)
+                    else:
+                        self.finished_signal.emit(False, f"Git pull failed:\n\n{result.stderr}")
+                except subprocess.TimeoutExpired:
+                    self.finished_signal.emit(False, "Git pull timed out after 30 seconds.")
+                except FileNotFoundError:
+                    self.finished_signal.emit(False, "Git command not found. Make sure git is installed.")
+                except Exception as e:
+                    self.finished_signal.emit(False, f"An error occurred:\n\n{str(e)}")
+        
+        self.git_thread = GitPullThread(script_dir)
+        self.git_thread.finished_signal.connect(self._on_git_pull_complete)
+        self.git_thread.start()
+    
+    def _on_git_pull_complete(self, success: bool, message: str) -> None:
+        """Handle git pull completion."""
+        self.toolbar.update_btn.setEnabled(True)
+        self.toolbar.update_btn.setText("Update")
+        
+        if success:
+            InfoDialog.show_info(
+                "Update Complete", 
+                f"Git pull successful:\n\n{message}\n\nRestarting window to load new code...", 
+                self
+            )
+            QtCore.QTimer.singleShot(500, self._restart_window)
+        else:
+            InfoDialog.show_error("Update Failed", message, self)
+    
+    def _restart_window(self) -> None:
+        """Restart the window to load updated code."""
+        import importlib
+        import sys
+        
+        modules_to_reload = [
+            mod for mod in sys.modules.keys() 
+            if mod.startswith('batch_exporter')
+        ]
+        
+        for mod_name in modules_to_reload:
+            if mod_name in sys.modules:
+                try:
+                    importlib.reload(sys.modules[mod_name])
+                except Exception as e:
+                    logger.warning(f"Could not reload module {mod_name}: {e}")
+        
+        from ..ui.main_window import show_batch_exporter
+        show_batch_exporter()
     
     def _on_tree_selection_changed(self) -> None:
         """Handle tree selection change."""
