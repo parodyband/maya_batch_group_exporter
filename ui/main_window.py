@@ -3,6 +3,7 @@ Main Window
 Slim coordinator that composes widgets and connects signals.
 """
 
+import os
 from typing import Optional
 
 try:
@@ -33,7 +34,8 @@ from .dialogs import (
 from ..context_managers import PausedTimerContext
 from ..constants import (
     REFRESH_INTERVAL_MS, BUTTON_HEIGHT_STANDARD, BUTTON_HEIGHT_EXPORT,
-    SPACING_SMALL, MARGIN_SMALL, SPACING_MEDIUM
+    SPACING_SMALL, MARGIN_SMALL, SPACING_MEDIUM,
+    MIN_WINDOW_WIDTH, PREFERRED_WINDOW_WIDTH
 )
 from ..logger import get_logger
 
@@ -78,6 +80,9 @@ class BatchExporterWindow(QtWidgets.QWidget):
         # Setup refresh timer
         self._setup_refresh_timer()
         
+        # Auto-load config if it exists for this scene
+        self._auto_load_config()
+        
         # Initial refresh
         self.tree_widget.refresh(preserve_selection=False)
         self._refresh_settings()
@@ -110,20 +115,35 @@ class BatchExporterWindow(QtWidgets.QWidget):
         
         self.add_group_btn = QtWidgets.QPushButton("+ Group")
         self.remove_btn = QtWidgets.QPushButton("- Remove")
+        self.move_up_btn = QtWidgets.QPushButton("↑")
+        self.move_down_btn = QtWidgets.QPushButton("↓")
         self.add_selected_btn = QtWidgets.QPushButton("+ Add Selected")
+        self.remove_selected_btn = QtWidgets.QPushButton("- Remove Selected")
         
         self.add_group_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
         self.remove_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        self.move_up_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        self.move_down_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
         self.add_selected_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        self.remove_selected_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        
+        self.move_up_btn.setFixedWidth(30)
+        self.move_down_btn.setFixedWidth(30)
         
         self.add_group_btn.setToolTip("Create a new export group")
         self.remove_btn.setToolTip("Remove selected groups or objects")
+        self.move_up_btn.setToolTip("Move selected group up in the list")
+        self.move_down_btn.setToolTip("Move selected group down in the list")
         self.add_selected_btn.setToolTip("Add selected scene objects to the current group")
+        self.remove_selected_btn.setToolTip("Remove selected scene objects from the current group")
         
         buttons_layout.addWidget(self.add_group_btn)
         buttons_layout.addWidget(self.remove_btn)
+        buttons_layout.addWidget(self.move_up_btn)
+        buttons_layout.addWidget(self.move_down_btn)
         buttons_layout.addStretch()
         buttons_layout.addWidget(self.add_selected_btn)
+        buttons_layout.addWidget(self.remove_selected_btn)
         
         tree_layout.addLayout(buttons_layout)
         main_layout.addWidget(tree_group)
@@ -203,7 +223,10 @@ class BatchExporterWindow(QtWidgets.QWidget):
         # Tree buttons
         self.add_group_btn.clicked.connect(self._add_group)
         self.remove_btn.clicked.connect(self._remove_selected)
+        self.move_up_btn.clicked.connect(self._on_move_up_clicked)
+        self.move_down_btn.clicked.connect(self._on_move_down_clicked)
         self.add_selected_btn.clicked.connect(self._add_selected_objects)
+        self.remove_selected_btn.clicked.connect(self._remove_selected_objects)
         
         # Export settings
         self.export_settings_panel.directory_changed.connect(self._on_directory_changed)
@@ -226,6 +249,25 @@ class BatchExporterWindow(QtWidgets.QWidget):
         self.refresh_timer.timeout.connect(self._on_timer_refresh)
         self.refresh_timer.start(REFRESH_INTERVAL_MS)
     
+    def _auto_load_config(self) -> None:
+        """Auto-load config file if it exists for the current scene (silent for new scenes)."""
+        try:
+            config_path = self.data_manager.get_json_path()
+            
+            # Only load if file exists (silent if not)
+            if os.path.exists(config_path):
+                logger.info(f"Auto-loading config: {config_path}")
+                success, message = self.data_manager.load_from_file(config_path)
+                if success:
+                    logger.info(f"Auto-loaded config successfully")
+                else:
+                    # Failed to load - just log, don't show error to user
+                    logger.debug(f"Could not auto-load config: {message}")
+            # No logging if file doesn't exist - normal for new scenes
+        except Exception as e:
+            # Silently handle any errors - don't interrupt startup
+            logger.debug(f"Auto-load skipped: {e}")
+    
     def _on_timer_refresh(self) -> None:
         """Handle timer-based refresh."""
         self.tree_widget.refresh(preserve_selection=True)
@@ -240,6 +282,9 @@ class BatchExporterWindow(QtWidgets.QWidget):
         """Handle tree selection change."""
         group_index = self.tree_widget.get_selected_group_index()
         self.selection_manager.set_current_group(group_index)
+        
+        # Automatically select objects in Maya scene
+        self._select_objects_in_scene()
     
     def _on_context_menu_requested(self, item, position) -> None:
         """Handle context menu request."""
@@ -266,6 +311,26 @@ class BatchExporterWindow(QtWidgets.QWidget):
         """Show context menu for group items."""
         menu = QtWidgets.QMenu(self)
         
+        # Find the group's current index
+        set_name = group_data["set_name"]
+        groups = self.data_manager.get_all_export_groups()
+        current_index = None
+        for i, group in enumerate(groups):
+            if group.get("set_name") == set_name:
+                current_index = i
+                break
+        
+        # Movement actions
+        move_up_action = menu.addAction("Move Up")
+        move_down_action = menu.addAction("Move Down")
+        
+        # Disable if can't move
+        if current_index is None or current_index == 0:
+            move_up_action.setEnabled(False)
+        if current_index is None or current_index >= len(groups) - 1:
+            move_down_action.setEnabled(False)
+        
+        menu.addSeparator()
         rename_action = menu.addAction("Rename Group")
         duplicate_action = menu.addAction("Duplicate Group")
         menu.addSeparator()
@@ -273,7 +338,11 @@ class BatchExporterWindow(QtWidgets.QWidget):
         
         action = menu.exec_(self.tree_widget.tree_widget.viewport().mapToGlobal(position))
         
-        if action == rename_action:
+        if action == move_up_action and current_index is not None:
+            self._move_group_up(current_index)
+        elif action == move_down_action and current_index is not None:
+            self._move_group_down(current_index)
+        elif action == rename_action:
             self._rename_group(group_data)
         elif action == duplicate_action:
             self._duplicate_group(group_data)
@@ -353,6 +422,32 @@ class BatchExporterWindow(QtWidgets.QWidget):
                         InfoDialog.show_error("Error", "Failed to delete group")
                     break
     
+    def _move_group_up(self, index: int) -> None:
+        """Move a group up in the list."""
+        if self.data_manager.move_group_up(index):
+            self.tree_widget.refresh(preserve_selection=True)
+        else:
+            logger.warning(f"Cannot move group at index {index} up")
+    
+    def _move_group_down(self, index: int) -> None:
+        """Move a group down in the list."""
+        if self.data_manager.move_group_down(index):
+            self.tree_widget.refresh(preserve_selection=True)
+        else:
+            logger.warning(f"Cannot move group at index {index} down")
+    
+    def _on_move_up_clicked(self) -> None:
+        """Handle move up button click."""
+        group_index = self.selection_manager.get_current_group_index()
+        if group_index is not None:
+            self._move_group_up(group_index)
+    
+    def _on_move_down_clicked(self) -> None:
+        """Handle move down button click."""
+        group_index = self.selection_manager.get_current_group_index()
+        if group_index is not None:
+            self._move_group_down(group_index)
+    
     def _remove_selected(self) -> None:
         """Remove selected groups or objects."""
         with PausedTimerContext(self.refresh_timer):
@@ -381,6 +476,36 @@ class BatchExporterWindow(QtWidgets.QWidget):
         if self.selection_manager.add_selected_scene_objects_to_current_group():
             self.tree_widget.refresh(preserve_selection=True)
             self.toolbar.update_summary()
+    
+    def _remove_selected_objects(self) -> None:
+        """Remove selected scene objects from current group."""
+        group_index = self.selection_manager.get_current_group_index()
+        if group_index is None:
+            InfoDialog.show_warning("No Group Selected", "Please select a group first.", self)
+            return
+        
+        # Get objects selected in Maya scene
+        selected = self.maya_scene.get_selection(long=True)
+        if not selected:
+            InfoDialog.show_warning("No Objects Selected", "Please select objects in the Maya scene to remove.", self)
+            return
+        
+        # Get the current group
+        group = self.data_manager.get_export_group(group_index)
+        if not group:
+            return
+        
+        set_name = group.get("set_name")
+        if not set_name:
+            return
+        
+        # Remove objects from set
+        if self.data_manager.remove_objects_from_set(set_name, selected):
+            logger.info(f"Removed {len(selected)} objects from group '{group.get('name')}'")
+            self.tree_widget.refresh(preserve_selection=True)
+            self.toolbar.update_summary()
+        else:
+            InfoDialog.show_error("Error", "Failed to remove objects from group")
     
     def _select_objects_in_scene(self) -> None:
         """Select objects from tree in Maya scene."""
@@ -528,8 +653,8 @@ def show_batch_exporter():
         workspace_control_name,
         label="Batch Exporter",
         widthProperty="preferred",
-        initialWidth=600,
-        minimumWidth=400,
+        initialWidth=PREFERRED_WINDOW_WIDTH,
+        minimumWidth=MIN_WINDOW_WIDTH,
         retain=False
     )
     

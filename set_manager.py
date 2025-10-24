@@ -147,15 +147,27 @@ class SetManager:
         try:
             members = self.maya_scene.get_set_members(set_name)
             
-            # Clean up vertex selection syntax if present
-            clean_members = []
+            clean_members: List[str] = []
             for member in members:
-                if '.vtx[' in member:
-                    clean_members.append(member.split('.vtx[')[0])
-                else:
-                    clean_members.append(member)
+                if member is None:
+                    continue
+                # Strip component suffixes (e.g., .vtx[], .f[], .e[])
+                for suffix in ['.vtx[', '.f[', '.e[']:
+                    if suffix in member:
+                        member = member.split(suffix)[0]
+                # Resolve to long (full DAG) path to avoid ambiguity
+                resolved = self.maya_scene.get_dag_path(member)
+                clean_members.append(resolved or member)
             
-            return clean_members
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_members = []
+            for member in clean_members:
+                if member and member not in seen:
+                    seen.add(member)
+                    unique_members.append(member)
+            
+            return unique_members
         except Exception as e:
             raise MayaOperationError(f"Failed to get objects from set '{set_name}': {e}")
     

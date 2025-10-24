@@ -158,6 +158,10 @@ class JsonConfigRepository(ConfigRepository):
             if missing_fields:
                 raise DataPersistenceError(f"Invalid configuration: missing FBX settings fields: {missing_fields}")
             
+            # expanded_groups is optional (for backwards compatibility with newly created files)
+            if "expanded_groups" not in data:
+                data["expanded_groups"] = []
+            
             logger.info(f"Loaded configuration from: {file_path}")
             return data
             

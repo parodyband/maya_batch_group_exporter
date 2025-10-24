@@ -58,8 +58,8 @@ class FBXSettings(ExportSettings):
         if not self.export_directory:
             raise ValidationError("Export directory is not set")
         
-        # Validate directory path
-        PathValidator.validate_directory(self.export_directory, must_exist=False)
+        # Note: We don't validate the path here because relative paths are allowed
+        # Path will be resolved and validated during export
 
 
 class FBXExporter(Exporter):
@@ -166,15 +166,37 @@ class FBXExporter(Exporter):
         
         # Build export path
         filename = f"{fbx_settings.file_prefix}{name}{FBX_EXTENSION}"
-        export_path = os.path.join(fbx_settings.export_directory, filename)
+        
+        # Resolve export directory (handle relative paths)
+        export_directory = fbx_settings.export_directory
+        
+        # If relative path, resolve relative to Maya scene file
+        if not os.path.isabs(export_directory):
+            scene_path = self.maya_scene.get_scene_name()
+            if scene_path:
+                # Relative to scene file directory
+                scene_dir = os.path.dirname(scene_path)
+                export_directory = os.path.normpath(os.path.join(scene_dir, export_directory))
+                logger.info(f"Resolved relative path: {fbx_settings.export_directory} -> {export_directory}")
+            else:
+                msg = f"Cannot use relative path '{export_directory}' - scene is not saved"
+                logger.error(msg)
+                return False, msg
+        
+        export_path = os.path.join(export_directory, filename)
+        
+        # Normalize path for MEL (MEL requires forward slashes on all platforms)
+        # Windows: C:\path\to\file.fbx -> C:/path/to/file.fbx
+        # Mac/Linux: /path/to/file.fbx -> /path/to/file.fbx (unchanged)
+        export_path_mel = export_path.replace('\\', '/')
         
         # Ensure directory exists
-        if not os.path.exists(fbx_settings.export_directory):
+        if not os.path.exists(export_directory):
             try:
-                os.makedirs(fbx_settings.export_directory)
-                logger.info(f"Created directory: {fbx_settings.export_directory}")
+                os.makedirs(export_directory)
+                logger.info(f"Created directory: {export_directory}")
             except Exception as e:
-                msg = f"Could not create directory '{fbx_settings.export_directory}': {e}"
+                msg = f"Could not create directory '{export_directory}': {e}"
                 logger.error(msg)
                 return False, msg
         
@@ -189,8 +211,8 @@ class FBXExporter(Exporter):
             # Select objects to export
             self.maya_scene.select(set_members, replace=True)
             
-            # Export using MEL
-            self.maya_scene.eval_mel(f'FBXExport -f "{export_path}" -s')
+            # Export using MEL (use forward-slash path for MEL compatibility)
+            self.maya_scene.eval_mel(f'FBXExport -f "{export_path_mel}" -s')
             
             # Restore selection
             if previous_selection:

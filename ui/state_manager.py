@@ -151,27 +151,45 @@ class IsolationStateManager:
                 logger.warning("No active model panel found")
                 return False
             
-            logger.info(f"Isolating {len(objects)} objects: {objects[:5]}..." if len(objects) > 5 else f"Isolating {len(objects)} objects: {objects}")
+            logger.info(f"Isolating {len(objects)} objects from group '{group.get('name')}'")
             
-            # First, turn OFF isolation to clear any existing isolation set
+            # Turn OFF isolation
             self.maya_scene.isolate_select(active_panel, state=False)
-            logger.debug("Cleared previous isolation (if any)")
             
-            # Select the objects we want to isolate
-            self.maya_scene.select(objects, replace=True)
-            
-            # Verify what's actually selected
-            actual_selection = self.maya_scene.get_selection()
-            logger.info(f"Actually selected {len(actual_selection)} objects: {actual_selection[:5]}..." if len(actual_selection) > 5 else f"Actually selected: {actual_selection}")
-            
-            # Turn ON isolation
+            # Turn ON isolation first to create/activate the set
             self.maya_scene.isolate_select(active_panel, state=True)
-            logger.debug("Isolation enabled on panel")
             
-            # Add each object directly to the isolation set
-            for obj in objects:
-                self.maya_scene.isolate_select(active_panel, add_dag_object=obj)
-            logger.info(f"Added {len(objects)} objects directly to isolation set")
+            # Get the isolation set (now it exists)
+            isolate_set = self.maya_scene.get_isolate_set(active_panel)
+            
+            if isolate_set:
+                logger.info(f"Isolation set name: {isolate_set}")
+                
+                try:
+                    # Get current members
+                    old_members = self.maya_scene.get_set_members(isolate_set)
+                    logger.info(f"OLD MEMBERS IN SET: {len(old_members)} - {old_members[:5] if len(old_members) > 5 else old_members}")
+                    
+                    # Remove all old members
+                    if old_members:
+                        self.maya_scene.remove_from_set(old_members, isolate_set)
+                        logger.info(f"REMOVED {len(old_members)} old objects")
+                    
+                    # Add ONLY our objects
+                    if objects:
+                        self.maya_scene.add_to_set(objects, isolate_set)
+                        logger.info(f"ADDED {len(objects)} objects")
+                        
+                        # Verify
+                        final_members = self.maya_scene.get_set_members(isolate_set)
+                        logger.info(f"FINAL SET MEMBERS: {len(final_members)}")
+                except Exception as e:
+                    logger.error(f"Error manipulating isolation set: {e}")
+            else:
+                logger.warning("Could not find isolation set!")
+            
+            # Select the objects for visual feedback
+            self.maya_scene.select(objects, replace=True)
             
             self.is_isolated = True
             self.isolated_panel = active_panel

@@ -55,8 +55,8 @@ class ExportSettingsPanel(QtWidgets.QGroupBox):
         dir_layout.addWidget(dir_label)
         
         self.export_dir_edit = QtWidgets.QLineEdit()
-        self.export_dir_edit.setPlaceholderText("Export directory...")
-        self.export_dir_edit.setToolTip("Directory where FBX files will be exported")
+        self.export_dir_edit.setPlaceholderText("Export directory (absolute or relative)...")
+        self.export_dir_edit.setToolTip("Export directory - use absolute path (C:/path) or relative to scene (../Models/)")
         dir_layout.addWidget(self.export_dir_edit)
         
         self.browse_dir_btn = QtWidgets.QPushButton("...")

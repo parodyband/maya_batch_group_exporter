@@ -46,8 +46,10 @@ class DataManager:
         
         self.data: ExportDataDict = {
             "export_groups": [],
-            "fbx_settings": self._get_default_fbx_settings()
+            "fbx_settings": self._get_default_fbx_settings(),
+            "expanded_groups": []
         }
+        self.group_order: List[str] = []  # Track desired order by set_name
     
     def _get_default_fbx_settings(self) -> FBXSettingsDict:
         """Get default FBX settings."""
@@ -62,20 +64,32 @@ class DataManager:
     def sync_from_scene(self) -> None:
         """Synchronize data structure from Maya sets in the scene."""
         try:
-            self.data["export_groups"] = []
-            
             export_sets = self.set_manager.list_export_sets()
             
+            # Build groups from sets
+            groups_dict = {}
             for set_name in export_sets:
                 if self.maya_scene.object_exists(set_name):
-                    # Extract display name from set name
                     display_name = set_name[len(SET_PREFIX):]
-                    
                     group: ExportGroupDict = {
                         "name": display_name,
                         "set_name": set_name
                     }
-                    self.data["export_groups"].append(group)
+                    groups_dict[set_name] = group
+            
+            # Update group_order to include any new sets
+            for set_name in groups_dict:
+                if set_name not in self.group_order:
+                    self.group_order.append(set_name)
+            
+            # Remove deleted sets from order
+            self.group_order = [s for s in self.group_order if s in groups_dict]
+            
+            # Build final list in the correct order
+            self.data["export_groups"] = []
+            for set_name in self.group_order:
+                if set_name in groups_dict:
+                    self.data["export_groups"].append(groups_dict[set_name])
             
             logger.debug(f"Synced {len(self.data['export_groups'])} groups from scene")
         except Exception as e:
@@ -381,6 +395,50 @@ class DataManager:
                 return None
         return None
     
+    def move_group_up(self, index: int) -> bool:
+        """
+        Move a group up in the list.
+        
+        Args:
+            index: Index of the group to move
+            
+        Returns:
+            True if successful
+        """
+        if index <= 0 or index >= len(self.group_order):
+            return False
+        
+        # Swap in order list
+        self.group_order[index], self.group_order[index - 1] = \
+            self.group_order[index - 1], self.group_order[index]
+        
+        # Resync to apply new order
+        self.sync_from_scene()
+        logger.info(f"Moved group up to index {index - 1}")
+        return True
+    
+    def move_group_down(self, index: int) -> bool:
+        """
+        Move a group down in the list.
+        
+        Args:
+            index: Index of the group to move
+            
+        Returns:
+            True if successful
+        """
+        if index < 0 or index >= len(self.group_order) - 1:
+            return False
+        
+        # Swap in order list
+        self.group_order[index], self.group_order[index + 1] = \
+            self.group_order[index + 1], self.group_order[index]
+        
+        # Resync to apply new order
+        self.sync_from_scene()
+        logger.info(f"Moved group down to index {index + 1}")
+        return True
+    
     def update_fbx_settings(self, settings: dict) -> None:
         """
         Update FBX export settings.
@@ -398,4 +456,22 @@ class DataManager:
             FBX settings dictionary
         """
         return self.data["fbx_settings"]
+    
+    def set_expanded_groups(self, expanded_set_names: List[str]) -> None:
+        """
+        Set which groups are expanded.
+        
+        Args:
+            expanded_set_names: List of set_names that are expanded
+        """
+        self.data["expanded_groups"] = expanded_set_names
+    
+    def get_expanded_groups(self) -> List[str]:
+        """
+        Get which groups are expanded.
+        
+        Returns:
+            List of set_names that are expanded
+        """
+        return self.data.get("expanded_groups", [])
 

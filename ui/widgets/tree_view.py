@@ -41,7 +41,10 @@ class ExportTreeWidget(QtWidgets.QWidget):
         super().__init__(parent)
         
         self.data_manager = data_manager
-        self.expanded_groups_state: Optional[Set[str]] = None
+        
+        # Load expanded state from data manager
+        saved_expanded = self.data_manager.get_expanded_groups()
+        self.expanded_groups_state: Optional[Set[str]] = set(saved_expanded) if saved_expanded else None
         
         self._create_ui()
         self._create_connections()
@@ -92,6 +95,8 @@ class ExportTreeWidget(QtWidgets.QWidget):
         """Connect signals."""
         self.search_edit.textChanged.connect(self._filter_tree_items)
         self.tree_widget.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree_widget.itemExpanded.connect(self._on_item_expanded)
+        self.tree_widget.itemCollapsed.connect(self._on_item_collapsed)
         self.tree_widget.customContextMenuRequested.connect(
             lambda pos: self.context_menu_requested.emit(
                 self.tree_widget.itemAt(pos), pos
@@ -174,11 +179,11 @@ class ExportTreeWidget(QtWidgets.QWidget):
             
             self.tree_widget.addTopLevelItem(group_item)
             
-            # Restore expanded state
+            # Restore expanded state (default to collapsed)
             if self.expanded_groups_state is not None:
                 group_item.setExpanded(set_name in self.expanded_groups_state)
             else:
-                group_item.setExpanded(True)
+                group_item.setExpanded(False)
             
             # Check if group should be selected
             if set_name in selected_groups:
@@ -219,6 +224,10 @@ class ExportTreeWidget(QtWidgets.QWidget):
         # Re-apply search filter
         if self.search_edit.text():
             self._filter_tree_items(self.search_edit.text())
+        
+        # Save expanded state to data manager
+        if self.expanded_groups_state is not None:
+            self.data_manager.set_expanded_groups(list(self.expanded_groups_state))
     
     def _filter_tree_items(self, search_text: str) -> None:
         """
@@ -253,6 +262,26 @@ class ExportTreeWidget(QtWidgets.QWidget):
             # Expand groups with matching children
             if child_match and search_text != "":
                 group_item.setExpanded(True)
+    
+    def _on_item_expanded(self, item) -> None:
+        """Handle item expanded."""
+        item_data = item.data(0, QtCore.Qt.UserRole)
+        if item_data and item_data.get("type") == "group":
+            set_name = item_data["data"].get("set_name")
+            if set_name:
+                if self.expanded_groups_state is None:
+                    self.expanded_groups_state = set()
+                self.expanded_groups_state.add(set_name)
+                self.data_manager.set_expanded_groups(list(self.expanded_groups_state))
+    
+    def _on_item_collapsed(self, item) -> None:
+        """Handle item collapsed."""
+        item_data = item.data(0, QtCore.Qt.UserRole)
+        if item_data and item_data.get("type") == "group":
+            set_name = item_data["data"].get("set_name")
+            if set_name and self.expanded_groups_state:
+                self.expanded_groups_state.discard(set_name)
+                self.data_manager.set_expanded_groups(list(self.expanded_groups_state))
     
     def _on_selection_changed(self) -> None:
         """Handle selection change."""

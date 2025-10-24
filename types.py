@@ -25,6 +25,7 @@ class ExportDataDict(TypedDict):
     """Type definition for complete export configuration."""
     export_groups: List[ExportGroupDict]
     fbx_settings: FBXSettingsDict
+    expanded_groups: List[str]  # List of set_names that are expanded
 
 
 class ExportResultDict(TypedDict):

@@ -68,6 +68,21 @@ class MayaSceneInterface(ABC):
         pass
     
     @abstractmethod
+    def get_isolate_set(self, panel: str) -> Optional[str]:
+        """Get the name of the isolation set for a panel."""
+        pass
+    
+    @abstractmethod
+    def add_to_isolate_set(self, panel: str, objects: List[str]) -> None:
+        """Add the specified objects to the panel's isolation set."""
+        pass
+
+    @abstractmethod
+    def clear_isolate_set(self, panel: str) -> None:
+        """Clear all objects from the panel's isolation set."""
+        pass
+
+    @abstractmethod
     def get_scene_name(self) -> str:
         """Get the current scene file path."""
         pass
@@ -101,6 +116,8 @@ class MayaSceneInterface(ABC):
     def isolate_select(self, panel: str, state: Optional[bool] = None, 
                       add_selected: bool = False, load_selected: bool = False,
                       add_dag_object: Optional[str] = None,
+                      remove_dag_object: Optional[str] = None,
+                      update: bool = False,
                       query: bool = False) -> Optional[bool]:
         """Control viewport isolation."""
         pass
@@ -177,6 +194,18 @@ class MayaSceneAdapter(MayaSceneInterface):
         result = cmds.ls(selection=True, long=long)
         return result or []
     
+    def get_dag_path(self, node: str) -> Optional[str]:
+        """Get the long (full DAG) path for a node if it exists."""
+        if not node:
+            return None
+        try:
+            long_paths = cmds.ls(node, long=True)
+            if long_paths:
+                return long_paths[0]
+        except Exception:
+            pass
+        return node
+    
     def select(self, objects: Optional[List[str]] = None, replace: bool = True, clear: bool = False) -> None:
         """Select objects in the scene."""
         if clear:
@@ -188,6 +217,41 @@ class MayaSceneAdapter(MayaSceneInterface):
         """Force Maya to refresh/update the viewport."""
         cmds.refresh()
     
+    def get_isolate_set(self, panel: str) -> Optional[str]:
+        """Get the name of the isolation set for a panel."""
+        try:
+            # Maya creates a set named like "modelPanel4ViewSelectedSet" for isolation
+            isolate_set = cmds.isolateSelect(panel, query=True, viewObjects=True)
+            return isolate_set
+        except Exception:
+            return None
+    
+    def add_to_isolate_set(self, panel: str, objects: List[str]) -> None:
+        """Add specified objects to the panel's isolation set."""
+        if not objects:
+            return
+        for obj in objects:
+            if obj and cmds.objExists(obj):
+                cmds.isolateSelect(panel, addDagObject=obj)
+
+    def clear_isolate_set(self, panel: str) -> None:
+        """Clear all objects from the panel's isolation set."""
+        # Turn isolation ON briefly to ensure the set exists
+        was_on = cmds.isolateSelect(panel, query=True, state=True)
+        if not was_on:
+            cmds.isolateSelect(panel, state=True)
+        
+        # Now get and clear the set
+        isolate_set = self.get_isolate_set(panel)
+        if isolate_set and cmds.objExists(isolate_set):
+            members = cmds.sets(isolate_set, query=True) or []
+            if members:
+                cmds.sets(members, remove=isolate_set)
+        
+        # Turn it back off if it was off
+        if not was_on:
+            cmds.isolateSelect(panel, state=False)
+
     def get_scene_name(self) -> str:
         """Get the current scene file path."""
         return cmds.file(query=True, sceneName=True)
@@ -220,6 +284,8 @@ class MayaSceneAdapter(MayaSceneInterface):
     def isolate_select(self, panel: str, state: Optional[bool] = None, 
                       add_selected: bool = False, load_selected: bool = False,
                       add_dag_object: Optional[str] = None,
+                      remove_dag_object: Optional[str] = None,
+                      update: bool = False,
                       query: bool = False) -> Optional[bool]:
         """Control viewport isolation."""
         if query:
@@ -229,7 +295,13 @@ class MayaSceneAdapter(MayaSceneInterface):
             # Convert boolean to int for Maya (1/0 instead of True/False)
             cmds.isolateSelect(panel, state=int(state))
             
-        if add_dag_object:
+        if update:
+            # Update replaces the isolation set with current selection (clears old objects)
+            cmds.isolateSelect(panel, update=True)
+        elif remove_dag_object:
+            # Remove specific object from isolation set
+            cmds.isolateSelect(panel, removeDagObject=remove_dag_object)
+        elif add_dag_object:
             # Add specific object to isolation set
             cmds.isolateSelect(panel, addDagObject=add_dag_object)
         elif load_selected:
