@@ -24,6 +24,7 @@ class ExportToolbar(QtWidgets.QWidget):
     select_in_scene_clicked = QtCore.Signal()
     isolate_clicked = QtCore.Signal()
     refresh_clicked = QtCore.Signal()
+    update_clicked = QtCore.Signal()
     
     def __init__(self, data_manager: DataManager, parent=None):
         """
@@ -51,14 +52,17 @@ class ExportToolbar(QtWidgets.QWidget):
         self.select_objects_btn = QtWidgets.QPushButton("Select in Scene")
         self.isolate_btn = QtWidgets.QPushButton("Isolate")
         self.refresh_btn = QtWidgets.QPushButton("↻ Refresh")
+        self.update_btn = QtWidgets.QPushButton("Update")
         
         self.select_objects_btn.setMinimumHeight(BUTTON_HEIGHT_ACTION)
         self.isolate_btn.setMinimumHeight(BUTTON_HEIGHT_ACTION)
         self.refresh_btn.setMinimumHeight(BUTTON_HEIGHT_ACTION)
+        self.update_btn.setMinimumHeight(BUTTON_HEIGHT_ACTION)
         
         self.select_objects_btn.setToolTip("Select objects from selected group/items in Maya scene")
         self.isolate_btn.setToolTip("Isolate selected group in viewport")
         self.refresh_btn.setToolTip("Refresh tree view")
+        self.update_btn.setToolTip("Pull latest changes from git repository")
         
         layout.addWidget(self.select_objects_btn)
         layout.addWidget(self.isolate_btn)
@@ -70,12 +74,14 @@ class ExportToolbar(QtWidgets.QWidget):
         layout.addWidget(self.summary_label)
         
         layout.addWidget(self.refresh_btn)
+        layout.addWidget(self.update_btn)
     
     def _create_connections(self) -> None:
         """Connect signals."""
         self.select_objects_btn.clicked.connect(self.select_in_scene_clicked.emit)
         self.isolate_btn.clicked.connect(self.isolate_clicked.emit)
         self.refresh_btn.clicked.connect(self.refresh_clicked.emit)
+        self.update_btn.clicked.connect(self.update_clicked.emit)
     
     def update_summary(self) -> None:
         """Update the scene summary label."""

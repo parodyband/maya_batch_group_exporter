@@ -4,6 +4,7 @@ Slim coordinator that composes widgets and connects signals.
 """
 
 import os
+import subprocess
 from typing import Optional
 
 try:
@@ -219,6 +220,7 @@ class BatchExporterWindow(QtWidgets.QWidget):
         self.toolbar.select_in_scene_clicked.connect(self._select_objects_in_scene)
         self.toolbar.isolate_clicked.connect(self._toggle_isolate)
         self.toolbar.refresh_clicked.connect(self._manual_refresh)
+        self.toolbar.update_clicked.connect(self._update_from_git)
         
         # Tree buttons
         self.add_group_btn.clicked.connect(self._add_group)
@@ -277,6 +279,30 @@ class BatchExporterWindow(QtWidgets.QWidget):
         """Handle manual refresh button click."""
         self.tree_widget.refresh(preserve_selection=True)
         self.toolbar.update_summary()
+    
+    def _update_from_git(self) -> None:
+        """Handle update button click to pull from git."""
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        try:
+            result = subprocess.run(
+                ["git", "pull"],
+                cwd=script_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                InfoDialog.show_info("Update Complete", f"Git pull successful:\n\n{result.stdout}", self)
+            else:
+                InfoDialog.show_error("Update Failed", f"Git pull failed:\n\n{result.stderr}", self)
+        except subprocess.TimeoutExpired:
+            InfoDialog.show_error("Update Failed", "Git pull timed out after 30 seconds.", self)
+        except FileNotFoundError:
+            InfoDialog.show_error("Update Failed", "Git command not found. Make sure git is installed.", self)
+        except Exception as e:
+            InfoDialog.show_error("Update Failed", f"An error occurred:\n\n{str(e)}", self)
     
     def _on_tree_selection_changed(self) -> None:
         """Handle tree selection change."""
