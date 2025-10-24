@@ -4,7 +4,7 @@ Batch export FBX files from Maya. Create export groups, configure settings, and 
 
 ## Installation
 
-Copy the `batch_exporter` folder to your Maya scripts directory:
+Copy the `maya_batch_group_exporter` folder to your Maya scripts directory:
 - Windows: `C:\Users\<username>\Documents\maya\scripts\`
 - Mac: `~/Library/Preferences/Autodesk/maya/scripts/`
 - Linux: `~/maya/scripts/`
@@ -14,7 +14,7 @@ Copy the `batch_exporter` folder to your Maya scripts directory:
 Run this in Maya's Script Editor:
 
 ```python
-from batch_exporter import show_batch_exporter
+from maya_batch_group_exporter import show_batch_exporter
 show_batch_exporter()
 ```
 
@@ -23,10 +23,10 @@ Or if you're developing and want to reload:
 ```python
 import sys
 for key in list(sys.modules.keys()):
-    if key.startswith('batch_exporter'):
+    if key.startswith('maya_batch_group_exporter'):
         del sys.modules[key]
 
-from batch_exporter import show_batch_exporter
+from maya_batch_group_exporter import show_batch_exporter
 show_batch_exporter()
 ```
 
@@ -51,7 +51,7 @@ Your settings are automatically saved with the Maya scene.
 The code is organized to be testable and maintainable:
 
 ```
-batch_exporter/
+maya_batch_group_exporter/
 ├── __init__.py
 ├── container.py           # Dependency injection
 ├── maya_facade.py         # Wraps Maya API
@@ -81,7 +81,7 @@ batch_exporter/
 Turn on debug logging:
 
 ```python
-from batch_exporter.logger import set_log_level
+from maya_batch_group_exporter.logger import set_log_level
 import logging
 
 set_log_level(logging.DEBUG)
