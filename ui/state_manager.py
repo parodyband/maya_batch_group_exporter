@@ -186,7 +186,14 @@ class IsolationStateManager:
                 except Exception as e:
                     logger.error(f"Error manipulating isolation set: {e}")
             else:
-                logger.warning("Could not find isolation set!")
+                logger.warning("Could not find isolation set! Trying fallback method...")
+                # Fallback: Use Maya's direct isolation API
+                try:
+                    for obj in objects:
+                        self.maya_scene.isolate_select(active_panel, add_dag_object=obj)
+                    logger.info(f"Added {len(objects)} objects using addDagObject fallback")
+                except Exception as e:
+                    logger.error(f"Fallback method failed: {e}")
             
             # Select the objects for visual feedback
             self.maya_scene.select(objects, replace=True)

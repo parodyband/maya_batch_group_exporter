@@ -114,12 +114,12 @@ class BatchExporterWindow(QtWidgets.QWidget):
         buttons_layout = QtWidgets.QHBoxLayout()
         buttons_layout.setSpacing(SPACING_SMALL)
         
-        self.add_group_btn = QtWidgets.QPushButton("+ Group")
-        self.remove_btn = QtWidgets.QPushButton("- Remove")
+        self.add_group_btn = QtWidgets.QPushButton(" + ")
+        self.remove_btn = QtWidgets.QPushButton(" - ")
         self.move_up_btn = QtWidgets.QPushButton("↑")
         self.move_down_btn = QtWidgets.QPushButton("↓")
-        self.add_selected_btn = QtWidgets.QPushButton("+ Add Selected")
-        self.remove_selected_btn = QtWidgets.QPushButton("- Remove Selected")
+        self.add_selected_btn = QtWidgets.QPushButton("+ Add to Selected")
+        self.remove_selected_btn = QtWidgets.QPushButton("- Remove from Selected")
         
         self.add_group_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
         self.remove_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
@@ -135,8 +135,8 @@ class BatchExporterWindow(QtWidgets.QWidget):
         self.remove_btn.setToolTip("Remove selected groups or objects")
         self.move_up_btn.setToolTip("Move selected group up in the list")
         self.move_down_btn.setToolTip("Move selected group down in the list")
-        self.add_selected_btn.setToolTip("Add selected scene objects to the current group")
-        self.remove_selected_btn.setToolTip("Remove selected scene objects from the current group")
+        self.add_selected_btn.setToolTip("Add selected scene objects to selected group(s)")
+        self.remove_selected_btn.setToolTip("Remove selected scene objects from selected group(s)")
         
         buttons_layout.addWidget(self.add_group_btn)
         buttons_layout.addWidget(self.remove_btn)
@@ -358,9 +358,6 @@ class BatchExporterWindow(QtWidgets.QWidget):
         """Handle tree selection change."""
         group_index = self.tree_widget.get_selected_group_index()
         self.selection_manager.set_current_group(group_index)
-        
-        # Automatically select objects in Maya scene
-        self._select_objects_in_scene()
     
     def _on_context_menu_requested(self, item, position) -> None:
         """Handle context menu request."""
@@ -548,16 +545,46 @@ class BatchExporterWindow(QtWidgets.QWidget):
             self.toolbar.update_summary()
     
     def _add_selected_objects(self) -> None:
-        """Add selected scene objects to current group."""
-        if self.selection_manager.add_selected_scene_objects_to_current_group():
+        """Add selected scene objects to all selected groups in tree."""
+        # Get selected groups from tree
+        info = self.tree_widget.get_selected_items_info()
+        selected_groups = info["groups"]
+        
+        if not selected_groups:
+            InfoDialog.show_warning("No Groups Selected", "Please select one or more groups in the tree.", self)
+            return
+        
+        # Get objects selected in Maya scene
+        selected = self.maya_scene.get_selection(long=True)
+        if not selected:
+            InfoDialog.show_warning("No Objects Selected", "Please select objects in the Maya scene to add.", self)
+            return
+        
+        # Add objects to each selected group
+        success_count = 0
+        for group in selected_groups:
+            set_name = group.get("set_name")
+            if set_name:
+                if self.data_manager.add_objects_to_set(set_name, selected):
+                    success_count += 1
+        
+        if success_count > 0:
+            logger.info(f"Added {len(selected)} objects to {success_count} groups")
             self.tree_widget.refresh(preserve_selection=True)
             self.toolbar.update_summary()
+            if success_count > 1:
+                InfoDialog.show_info("Success", f"Added {len(selected)} object(s) to {success_count} groups", self)
+        else:
+            InfoDialog.show_error("Error", "Failed to add objects to groups", self)
     
     def _remove_selected_objects(self) -> None:
-        """Remove selected scene objects from current group."""
-        group_index = self.selection_manager.get_current_group_index()
-        if group_index is None:
-            InfoDialog.show_warning("No Group Selected", "Please select a group first.", self)
+        """Remove selected scene objects from all selected groups in tree."""
+        # Get selected groups from tree
+        info = self.tree_widget.get_selected_items_info()
+        selected_groups = info["groups"]
+        
+        if not selected_groups:
+            InfoDialog.show_warning("No Groups Selected", "Please select one or more groups in the tree.", self)
             return
         
         # Get objects selected in Maya scene
@@ -566,22 +593,22 @@ class BatchExporterWindow(QtWidgets.QWidget):
             InfoDialog.show_warning("No Objects Selected", "Please select objects in the Maya scene to remove.", self)
             return
         
-        # Get the current group
-        group = self.data_manager.get_export_group(group_index)
-        if not group:
-            return
+        # Remove objects from each selected group
+        success_count = 0
+        for group in selected_groups:
+            set_name = group.get("set_name")
+            if set_name:
+                if self.data_manager.remove_objects_from_set(set_name, selected):
+                    success_count += 1
         
-        set_name = group.get("set_name")
-        if not set_name:
-            return
-        
-        # Remove objects from set
-        if self.data_manager.remove_objects_from_set(set_name, selected):
-            logger.info(f"Removed {len(selected)} objects from group '{group.get('name')}'")
+        if success_count > 0:
+            logger.info(f"Removed {len(selected)} objects from {success_count} groups")
             self.tree_widget.refresh(preserve_selection=True)
             self.toolbar.update_summary()
+            if success_count > 1:
+                InfoDialog.show_info("Success", f"Removed {len(selected)} object(s) from {success_count} groups", self)
         else:
-            InfoDialog.show_error("Error", "Failed to remove objects from group")
+            InfoDialog.show_error("Error", "Failed to remove objects from groups", self)
     
     def _select_objects_in_scene(self) -> None:
         """Select objects from tree in Maya scene."""
@@ -603,13 +630,21 @@ class BatchExporterWindow(QtWidgets.QWidget):
     
     def _toggle_isolate(self) -> None:
         """Toggle isolation."""
+        # If currently isolated, always allow unisolation regardless of selection
+        if self.isolation_manager.get_isolation_state():
+            self.isolation_manager.unisolate()
+            self.toolbar.set_isolated_state(False)
+            return
+        
+        # If not isolated, we need a group selected to isolate
         group_index = self.selection_manager.get_current_group_index()
         if group_index is None:
             logger.warning("No group selected for isolation")
             return
         
-        is_isolated = self.isolation_manager.toggle_isolation(group_index)
-        self.toolbar.set_isolated_state(is_isolated)
+        # Isolate the selected group
+        success = self.isolation_manager.isolate_group(group_index)
+        self.toolbar.set_isolated_state(success)
     
     def _on_directory_changed(self, directory: str) -> None:
         """Handle directory change."""
