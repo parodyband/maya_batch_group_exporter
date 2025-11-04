@@ -146,6 +146,36 @@ class MayaSceneInterface(ABC):
     def find_control(self, name: str) -> Optional[int]:
         """Find a control by name."""
         pass
+    
+    @abstractmethod
+    def get_world_position(self, obj: str) -> Optional[Tuple[float, float, float]]:
+        """Get the world space position of an object."""
+        pass
+    
+    @abstractmethod
+    def get_world_rotation(self, obj: str) -> Optional[Tuple[float, float, float]]:
+        """Get the world space rotation of an object."""
+        pass
+    
+    @abstractmethod
+    def get_world_scale(self, obj: str) -> Optional[Tuple[float, float, float]]:
+        """Get the world space scale of an object."""
+        pass
+    
+    @abstractmethod
+    def is_curve(self, obj: str) -> bool:
+        """Check if an object is a NURBS curve."""
+        pass
+    
+    @abstractmethod
+    def get_curve_cvs(self, curve: str) -> Optional[List[Tuple[float, float, float]]]:
+        """Get all CV positions for a curve in world space."""
+        pass
+    
+    @abstractmethod
+    def get_curve_degree(self, curve: str) -> Optional[int]:
+        """Get the degree of a curve."""
+        pass
 
 
 class MayaSceneAdapter(MayaSceneInterface):
@@ -332,4 +362,95 @@ class MayaSceneAdapter(MayaSceneInterface):
         from maya import OpenMayaUI as omui
         control_ptr = omui.MQtUtil.findControl(name)
         return int(control_ptr) if control_ptr else None
+    
+    def get_world_position(self, obj: str) -> Optional[Tuple[float, float, float]]:
+        """Get the world space position of an object."""
+        try:
+            if not cmds.objExists(obj):
+                return None
+            pos = cmds.xform(obj, query=True, worldSpace=True, translation=True)
+            return (pos[0], pos[1], pos[2])
+        except Exception:
+            return None
+    
+    def get_world_rotation(self, obj: str) -> Optional[Tuple[float, float, float]]:
+        """Get the world space rotation of an object."""
+        try:
+            if not cmds.objExists(obj):
+                return None
+            rot = cmds.xform(obj, query=True, worldSpace=True, rotation=True)
+            return (rot[0], rot[1], rot[2])
+        except Exception:
+            return None
+    
+    def get_world_scale(self, obj: str) -> Optional[Tuple[float, float, float]]:
+        """Get the world space scale of an object."""
+        try:
+            if not cmds.objExists(obj):
+                return None
+            scale = cmds.xform(obj, query=True, worldSpace=True, scale=True)
+            return (scale[0], scale[1], scale[2])
+        except Exception:
+            return None
+    
+    def is_curve(self, obj: str) -> bool:
+        """Check if an object is a NURBS curve."""
+        try:
+            if not cmds.objExists(obj):
+                return False
+            # Check if it's a transform with a curve shape
+            shapes = cmds.listRelatives(obj, shapes=True, type='nurbsCurve') or []
+            if shapes:
+                return True
+            # Check if it's directly a curve shape
+            return cmds.objectType(obj) == 'nurbsCurve'
+        except Exception:
+            return False
+    
+    def get_curve_cvs(self, curve: str) -> Optional[List[Tuple[float, float, float]]]:
+        """Get all CV positions for a curve in world space."""
+        try:
+            if not cmds.objExists(curve):
+                return None
+            
+            # Get the curve shape if it's a transform
+            curve_shape = curve
+            if cmds.objectType(curve) == 'transform':
+                shapes = cmds.listRelatives(curve, shapes=True, type='nurbsCurve')
+                if not shapes:
+                    return None
+                curve_shape = shapes[0]
+            
+            # Get number of CVs
+            degree = cmds.getAttr(f"{curve_shape}.degree")
+            spans = cmds.getAttr(f"{curve_shape}.spans")
+            num_cvs = spans + degree
+            
+            # Get CV positions in world space
+            cvs = []
+            for i in range(num_cvs):
+                pos = cmds.xform(f"{curve_shape}.cv[{i}]", query=True, worldSpace=True, translation=True)
+                cvs.append((pos[0], pos[1], pos[2]))
+            
+            return cvs
+        except Exception:
+            return None
+    
+    def get_curve_degree(self, curve: str) -> Optional[int]:
+        """Get the degree of a curve."""
+        try:
+            if not cmds.objExists(curve):
+                return None
+            
+            # Get the curve shape if it's a transform
+            curve_shape = curve
+            if cmds.objectType(curve) == 'transform':
+                shapes = cmds.listRelatives(curve, shapes=True, type='nurbsCurve')
+                if not shapes:
+                    return None
+                curve_shape = shapes[0]
+            
+            return cmds.getAttr(f"{curve_shape}.degree")
+        except Exception:
+            return None
 

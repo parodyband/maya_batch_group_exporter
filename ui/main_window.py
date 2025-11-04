@@ -3,6 +3,7 @@ Main Window
 Slim coordinator that composes widgets and connects signals.
 """
 
+import json
 import os
 import subprocess
 from typing import Optional
@@ -95,10 +96,29 @@ class BatchExporterWindow(QtWidgets.QWidget):
         main_layout.setContentsMargins(MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL)
         main_layout.setSpacing(SPACING_SMALL)
         
+        # Create tab widget
+        self.tab_widget = QtWidgets.QTabWidget()
+        main_layout.addWidget(self.tab_widget)
+        
+        # Tab 1: Batch Exporter (existing functionality)
+        batch_export_tab = self._create_batch_export_tab()
+        self.tab_widget.addTab(batch_export_tab, "Batch Exporter")
+        
+        # Tab 2: Scene JSON Export (new feature)
+        scene_export_tab = self._create_scene_export_tab()
+        self.tab_widget.addTab(scene_export_tab, "Scene Export")
+    
+    def _create_batch_export_tab(self) -> QtWidgets.QWidget:
+        """Create the batch exporter tab (original functionality)."""
+        tab_widget = QtWidgets.QWidget()
+        tab_layout = QtWidgets.QVBoxLayout(tab_widget)
+        tab_layout.setContentsMargins(MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL)
+        tab_layout.setSpacing(SPACING_SMALL)
+        
         # Toolbar
         self.toolbar = ExportToolbar(self.data_manager)
-        main_layout.addWidget(self.toolbar)
-        main_layout.addWidget(self._create_separator())
+        tab_layout.addWidget(self.toolbar)
+        tab_layout.addWidget(self._create_separator())
         
         # Tree panel
         tree_group = QtWidgets.QGroupBox("Level Hierarchy")
@@ -147,19 +167,72 @@ class BatchExporterWindow(QtWidgets.QWidget):
         buttons_layout.addWidget(self.remove_selected_btn)
         
         tree_layout.addLayout(buttons_layout)
-        main_layout.addWidget(tree_group)
+        tab_layout.addWidget(tree_group)
         
         # Export settings
         self.export_settings_panel = ExportSettingsPanel()
-        main_layout.addWidget(self.export_settings_panel)
+        tab_layout.addWidget(self.export_settings_panel)
         
         # FBX settings
         self.fbx_settings_panel = FBXSettingsPanel()
-        main_layout.addWidget(self.fbx_settings_panel)
+        tab_layout.addWidget(self.fbx_settings_panel)
         
         # Export panel
-        main_layout.addWidget(self._create_separator())
-        main_layout.addWidget(self._create_export_panel())
+        tab_layout.addWidget(self._create_separator())
+        tab_layout.addWidget(self._create_export_panel())
+        
+        return tab_widget
+    
+    def _create_scene_export_tab(self) -> QtWidgets.QWidget:
+        """Create the scene JSON export tab."""
+        tab_widget = QtWidgets.QWidget()
+        tab_layout = QtWidgets.QVBoxLayout(tab_widget)
+        tab_layout.setContentsMargins(MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL, MARGIN_SMALL)
+        tab_layout.setSpacing(SPACING_MEDIUM)
+        
+        # Info panel
+        info_group = QtWidgets.QGroupBox("Scene Object Export")
+        info_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        info_layout = QtWidgets.QVBoxLayout(info_group)
+        
+        info_label = QtWidgets.QLabel(
+            "Export selected Maya objects to JSON file.\n"
+            "Transforms: Object names, world positions, rotations, and scales.\n"
+            "Curves: CV positions, CV count, and curve degree."
+        )
+        info_label.setWordWrap(True)
+        info_layout.addWidget(info_label)
+        
+        tab_layout.addWidget(info_group)
+        
+        # Selection info
+        selection_group = QtWidgets.QGroupBox("Current Selection")
+        selection_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        selection_layout = QtWidgets.QVBoxLayout(selection_group)
+        
+        self.selection_list = QtWidgets.QListWidget()
+        self.selection_list.setMaximumHeight(200)
+        selection_layout.addWidget(self.selection_list)
+        
+        refresh_selection_btn = QtWidgets.QPushButton("Refresh Selection")
+        refresh_selection_btn.clicked.connect(self._refresh_json_selection)
+        refresh_selection_btn.setMinimumHeight(BUTTON_HEIGHT_STANDARD)
+        selection_layout.addWidget(refresh_selection_btn)
+        
+        tab_layout.addWidget(selection_group)
+        
+        # Export button
+        tab_layout.addStretch()
+        export_json_btn = QtWidgets.QPushButton("Export Selected to JSON")
+        export_json_btn.setMinimumHeight(BUTTON_HEIGHT_EXPORT)
+        export_json_btn.setStyleSheet(
+            "QPushButton { background-color: #5cb85c; color: white; font-weight: bold; } "
+            "QPushButton:hover { background-color: #4a9b4a; }"
+        )
+        export_json_btn.clicked.connect(self._export_scene_json)
+        tab_layout.addWidget(export_json_btn)
+        
+        return tab_widget
     
     def _create_separator(self) -> QtWidgets.QFrame:
         """Create a visual separator line."""
@@ -743,6 +816,109 @@ class BatchExporterWindow(QtWidgets.QWidget):
         results, success_count = self.export_service.export_all_groups(groups, settings)
         
         ExportResultsDialog.show_batch_results(results, success_count, len(groups), self)
+    
+    def _refresh_json_selection(self) -> None:
+        """Refresh the selection list in the JSON export tab."""
+        self.selection_list.clear()
+        selected = self.maya_scene.get_selection(long=False)
+        
+        if not selected:
+            self.selection_list.addItem("(No objects selected)")
+        else:
+            for obj in selected:
+                self.selection_list.addItem(obj)
+    
+    def _export_scene_json(self) -> None:
+        """Export selected objects to JSON file."""
+        selected = self.maya_scene.get_selection(long=False)
+        
+        if not selected:
+            InfoDialog.show_warning("No Selection", "Please select objects in Maya to export.", self)
+            return
+        
+        # Get save file path
+        scene_name = self.maya_scene.get_scene_name()
+        default_dir = os.path.dirname(scene_name) if scene_name else ""
+        
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Scene Objects to JSON",
+            os.path.join(default_dir, "scene_export.json"),
+            "JSON Files (*.json)"
+        )
+        
+        if not file_path:
+            return
+        
+        # Build export data
+        export_data = []
+        
+        for obj in selected:
+            obj_data = {"name": obj}
+            
+            # Check if it's a curve/spline
+            if self.maya_scene.is_curve(obj):
+                obj_data["type"] = "curve"
+                
+                # Get curve-specific data
+                degree = self.maya_scene.get_curve_degree(obj)
+                if degree is not None:
+                    obj_data["degree"] = degree
+                
+                cvs = self.maya_scene.get_curve_cvs(obj)
+                if cvs:
+                    obj_data["cv_count"] = len(cvs)
+                    obj_data["cvs"] = [
+                        {"x": cv[0], "y": cv[1], "z": cv[2]}
+                        for cv in cvs
+                    ]
+            else:
+                obj_data["type"] = "transform"
+                
+                # Get transform data
+                position = self.maya_scene.get_world_position(obj)
+                if position:
+                    obj_data["position"] = {
+                        "x": position[0],
+                        "y": position[1],
+                        "z": position[2]
+                    }
+                
+                rotation = self.maya_scene.get_world_rotation(obj)
+                if rotation:
+                    obj_data["rotation"] = {
+                        "x": rotation[0],
+                        "y": rotation[1],
+                        "z": rotation[2]
+                    }
+                
+                scale = self.maya_scene.get_world_scale(obj)
+                if scale:
+                    obj_data["scale"] = {
+                        "x": scale[0],
+                        "y": scale[1],
+                        "z": scale[2]
+                    }
+            
+            export_data.append(obj_data)
+        
+        # Write to file
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(export_data, f, indent=2)
+            
+            InfoDialog.show_info(
+                "Export Successful",
+                f"Exported {len(selected)} object(s) to:\n{file_path}",
+                self
+            )
+            logger.info(f"Exported {len(selected)} objects to {file_path}")
+        except Exception as e:
+            InfoDialog.show_error(
+                "Export Failed",
+                f"Failed to export objects:\n{str(e)}",
+                self
+            )
+            logger.error(f"Failed to export scene JSON: {e}")
 
 
 def show_batch_exporter():
